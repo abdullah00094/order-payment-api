@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 
 class UpdateOrderRequest extends FormRequest
 {
@@ -24,6 +25,7 @@ class UpdateOrderRequest extends FormRequest
         return [
             'customer_name' => ['sometimes', 'required', 'string', 'max:255'],
             'customer_email' => ['sometimes', 'required', 'email', 'max:255'],
+            'status' => ['sometimes', 'required', 'string', Rule::in(['pending', 'confirmed', 'cancelled'])],
             'items' => ['sometimes', 'required', 'array', 'min:1'],
             'items.*.product_name' => ['required', 'string', 'max:255'],
             'items.*.quantity' => ['required', 'integer', 'min:1'],

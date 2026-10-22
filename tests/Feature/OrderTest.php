@@ -367,8 +367,115 @@ class OrderTest extends TestCase
         $order->refresh();
 
         $this->assertSame($user->id, $order->user_id);
-        $this->assertSame('pending', $order->status);
+        $this->assertSame('confirmed', $order->status);
         $this->assertSame('7.77', $order->total);
         $this->assertSame($order->id, $order->items()->first()->order_id);
+    }
+
+    public function test_pending_order_can_transition_to_confirmed_or_cancelled(): void
+    {
+        $user = User::factory()->create();
+
+        $pending = $this->createOrder($user);
+
+        $confirmed = $this->patchJson("/api/orders/{$pending->id}", [
+            'status' => 'confirmed',
+        ], [
+            'Authorization' => 'Bearer '.$this->authToken($user),
+        ]);
+
+        $confirmed->assertStatus(200)
+            ->assertJsonPath('order.status', 'confirmed');
+
+        $this->assertSame('confirmed', $pending->refresh()->status);
+
+        $cancelled = $this->createOrder($user);
+
+        $cancelledUpdate = $this->patchJson("/api/orders/{$cancelled->id}", [
+            'status' => 'cancelled',
+        ], [
+            'Authorization' => 'Bearer '.$this->authToken($user),
+        ]);
+
+        $cancelledUpdate->assertStatus(200)
+            ->assertJsonPath('order.status', 'cancelled');
+
+        $this->assertSame('cancelled', $cancelled->refresh()->status);
+    }
+
+    public function test_status_transition_rejects_invalid_status_with_422(): void
+    {
+        $user = User::factory()->create();
+        $order = $this->createOrder($user);
+
+        $this->patchJson("/api/orders/{$order->id}", [
+            'status' => 'shipped',
+        ], [
+            'Authorization' => 'Bearer '.$this->authToken($user),
+        ])->assertStatus(422)
+            ->assertJsonValidationErrors(['status']);
+
+        $order->refresh();
+
+        $this->assertSame('pending', $order->status);
+    }
+
+    public function test_confirmed_and_cancelled_orders_cannot_be_modified_afterwards(): void
+    {
+        $user = User::factory()->create();
+
+        $confirmed = $this->createOrder($user);
+        $confirmed->update(['status' => 'confirmed']);
+
+        $this->patchJson("/api/orders/{$confirmed->id}", [
+            'status' => 'pending',
+        ], [
+            'Authorization' => 'Bearer '.$this->authToken($user),
+        ])->assertStatus(409);
+
+        $this->patchJson("/api/orders/{$confirmed->id}", [
+            'customer_name' => 'Should Not Apply',
+        ], [
+            'Authorization' => 'Bearer '.$this->authToken($user),
+        ])->assertStatus(409);
+
+        $cancelled = $this->createOrder($user);
+        $cancelled->update(['status' => 'cancelled']);
+
+        $this->patchJson("/api/orders/{$cancelled->id}", [
+            'items' => [['product_name' => 'X', 'quantity' => 1, 'price' => '1.00']],
+        ], [
+            'Authorization' => 'Bearer '.$this->authToken($user),
+        ])->assertStatus(409);
+
+        $confirmed->refresh();
+        $cancelled->refresh();
+
+        $this->assertSame('confirmed', $confirmed->status);
+        $this->assertNotSame('Should Not Apply', $confirmed->customer_name);
+        $this->assertSame('cancelled', $cancelled->status);
+        $this->assertSame(2, $cancelled->items()->count());
+    }
+
+    public function test_status_transition_combines_with_customer_and_items_updates(): void
+    {
+        $user = User::factory()->create();
+        $order = $this->createOrder($user);
+
+        $response = $this->patchJson("/api/orders/{$order->id}", [
+            'status' => 'confirmed',
+            'customer_email' => 'updated@example.com',
+            'items' => [
+                ['product_name' => 'New Item', 'quantity' => 2, 'price' => '12.50'],
+            ],
+        ], [
+            'Authorization' => 'Bearer '.$this->authToken($user),
+        ]);
+
+        $response->assertStatus(200)
+            ->assertJsonPath('order.status', 'confirmed')
+            ->assertJsonPath('order.customer_email', 'updated@example.com')
+            ->assertJsonPath('order.total', '25.00')
+            ->assertJsonCount(1, 'order.items');
     }
 }

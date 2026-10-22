@@ -67,7 +67,7 @@ class OrderController extends Controller
         $order = DB::transaction(function () use ($request, $order): Order {
             $validated = $request->validated();
 
-            $order->fill(collect($validated)->only('customer_name', 'customer_email')->all());
+            $order->fill(collect($validated)->only('customer_name', 'customer_email', 'status')->all());
 
             if ($request->validated('items') !== null) {
                 $total = '0';
