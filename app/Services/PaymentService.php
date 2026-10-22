@@ -20,9 +20,16 @@ class PaymentService
     public function process(Order $order, string $method, string $outcome): Payment
     {
         return DB::transaction(function () use ($order, $method, $outcome): Payment {
-            $order = $order->newQuery()->whereKey($order->getKey())->lockForUpdate()->first();
+            $locked = Order::query()
+                ->whereKey($order->getKey())
+                ->lockForUpdate()
+                ->first();
 
-            if ($order->status !== 'confirmed') {
+            if ($locked === null || $locked->user_id !== $order->user_id) {
+                throw new RuntimeException('Order not found.');
+            }
+
+            if ($locked->status !== 'confirmed') {
                 throw new RuntimeException('Only confirmed orders can be paid.');
             }
 
@@ -37,7 +44,7 @@ class PaymentService
 
             $status = $this->resolver->resolve($method)->process($outcome);
 
-            return $order->payments()->create([
+            return $locked->payments()->create([
                 'method' => $method,
                 'status' => $status,
             ]);

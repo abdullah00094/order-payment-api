@@ -2,10 +2,13 @@
 
 namespace App\Http\Requests;
 
+use App\Http\Requests\Concerns\ValidatesOrderItems;
 use Illuminate\Foundation\Http\FormRequest;
 
 class StoreOrderRequest extends FormRequest
 {
+    use ValidatesOrderItems;
+
     /**
      * Determine if the user is authorized to make this request.
      */
@@ -24,10 +27,8 @@ class StoreOrderRequest extends FormRequest
         return [
             'customer_name' => ['required', 'string', 'max:255'],
             'customer_email' => ['required', 'email', 'max:255'],
-            'items' => ['required', 'array', 'min:1'],
-            'items.*.product_name' => ['required', 'string', 'max:255'],
-            'items.*.quantity' => ['required', 'integer', 'min:1'],
-            'items.*.price' => ['required', 'numeric', 'min:0', 'regex:/^\d+(\.\d{1,2})?$/'],
+            'items' => ['required', 'array', 'min:1', ...$this->itemsArrayRules()],
+            ...$this->orderItemRules(),
         ];
     }
 
@@ -38,8 +39,6 @@ class StoreOrderRequest extends FormRequest
      */
     public function messages(): array
     {
-        return [
-            'items.*.price.regex' => 'The :attribute must have at most 2 decimal places.',
-        ];
+        return $this->orderItemMessages();
     }
 }
