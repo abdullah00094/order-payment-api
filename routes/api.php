@@ -14,4 +14,6 @@ Route::middleware('auth:api')->group(function () {
     Route::get('/orders/{id}', [OrderController::class, 'show']);
     Route::patch('/orders/{id}', [OrderController::class, 'update']);
     Route::post('/orders/{id}/payments', [PaymentController::class, 'store']);
+    Route::get('/orders/{id}/payments', [PaymentController::class, 'orderPayments']);
+    Route::get('/payments', [PaymentController::class, 'index']);
 });

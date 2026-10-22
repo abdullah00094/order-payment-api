@@ -195,4 +195,109 @@ class PaymentTest extends TestCase
         $this->assertSame(2, array_count_values($results)[409] ?? 0, 'Subsequent requests must 409');
         $this->assertSame(1, Payment::count(), 'Rejected requests must not create payment rows');
     }
+
+    private function listPayments(?User $asUser = null, ?int $orderId = null): TestResponse
+    {
+        $uri = $orderId !== null ? "/api/orders/{$orderId}/payments" : '/api/payments';
+
+        return $this->getJson($uri, [
+            'Authorization' => 'Bearer '.auth('api')->login($asUser ?? User::first()),
+        ]);
+    }
+
+    public function test_payment_listing_is_paginated_and_restricted_to_authenticated_users_orders(): void
+    {
+        $user = User::factory()->create();
+        $otherUser = User::factory()->create();
+
+        $userOrder = $this->createConfirmedOrder($user);
+        $foreignOrder = $this->createConfirmedOrder($otherUser);
+
+        $payments = $userOrder->payments()->createMany([
+            ['method' => 'credit_card', 'status' => 'failed'],
+            ['method' => 'credit_card', 'status' => 'failed'],
+            ['method' => 'credit_card', 'status' => 'failed'],
+        ]);
+
+        foreach ($payments as $index => $payment) {
+            $payment->forceFill(['created_at' => now()->subMinutes(3 - $index)])->saveQuietly();
+        }
+
+        $foreignOrder->payments()->create(['method' => 'paypal', 'status' => 'successful']);
+
+        $response = $this->listPayments($user);
+
+        $response->assertStatus(200)
+            ->assertJsonCount(3, 'data')
+            ->assertJsonPath('per_page', 15)
+            ->assertJsonPath('total', 3)
+            ->assertJsonStructure(['data', 'current_page', 'per_page', 'total', 'last_page', 'links']);
+
+        $ids = collect($response->json('data'))->pluck('id')->all();
+
+        $this->assertSame(
+            collect($ids)->sortDesc()->values()->all(),
+            $ids,
+            'Payments must be newest first'
+        );
+
+        collect($response->json('data'))->each(function (array $payment) use ($userOrder): void {
+            $this->assertSame($userOrder->id, $payment['order_id'], 'Foreign payments must not leak');
+        });
+    }
+
+    public function test_order_payments_endpoint_filters_by_specific_order(): void
+    {
+        $user = User::factory()->create();
+        $orderA = $this->createConfirmedOrder($user);
+        $orderB = $this->createConfirmedOrder($user);
+
+        $orderA->payments()->create(['method' => 'credit_card', 'status' => 'successful']);
+        $orderB->payments()->create(['method' => 'paypal', 'status' => 'failed']);
+
+        $response = $this->listPayments($user, $orderA->id);
+
+        $response->assertStatus(200)
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.order_id', $orderA->id)
+            ->assertJsonPath('data.0.method', 'credit_card')
+            ->assertJsonPath('data.0.status', 'successful');
+    }
+
+    public function test_order_payments_returns_404_for_missing_or_foreign_orders(): void
+    {
+        $user = User::factory()->create();
+        $owner = User::factory()->create();
+        $foreignOrder = $this->createConfirmedOrder($owner);
+
+        $foreignOrder->payments()->create(['method' => 'credit_card', 'status' => 'successful']);
+
+        $this->listPayments($user, $foreignOrder->id)->assertStatus(404);
+        $this->listPayments($user, 999999)->assertStatus(404);
+
+        $this->assertSame(1, Payment::count());
+    }
+
+    public function test_payment_read_endpoints_require_authentication(): void
+    {
+        $this->getJson('/api/payments')->assertStatus(401);
+        $this->getJson('/api/orders/1/payments')->assertStatus(401);
+    }
+
+    public function test_payment_listings_return_empty_data_for_users_without_payments(): void
+    {
+        $user = User::factory()->create();
+
+        $this->createConfirmedOrder($user);
+
+        $this->listPayments($user)
+            ->assertStatus(200)
+            ->assertJsonCount(0, 'data')
+            ->assertJsonPath('total', 0);
+
+        $this->listPayments($user, Order::first()->id)
+            ->assertStatus(200)
+            ->assertJsonCount(0, 'data')
+            ->assertJsonPath('total', 0);
+    }
 }
