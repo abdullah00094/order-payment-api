@@ -478,4 +478,83 @@ class OrderTest extends TestCase
             ->assertJsonPath('order.total', '25.00')
             ->assertJsonCount(1, 'order.items');
     }
+
+    private function createOrderWithItems(User $user, string $status = 'pending'): Order
+    {
+        $order = Order::factory()->create(['user_id' => $user->id, 'status' => $status]);
+        $order->items()->create(['product_name' => 'Widget', 'quantity' => 1, 'price' => '10.00']);
+
+        return $order->refresh();
+    }
+
+    public function test_deleting_paymentless_order_removes_order_and_items(): void
+    {
+        $user = User::factory()->create();
+        $order = $this->createOrderWithItems($user);
+        $itemId = $order->items()->first()->id;
+
+        $this->deleteJson("/api/orders/{$order->id}", [], [
+            'Authorization' => 'Bearer '.$this->authToken($user),
+        ])->assertStatus(204)
+            ->assertNoContent();
+
+        $this->assertDatabaseMissing('orders', ['id' => $order->id]);
+        $this->assertDatabaseMissing('order_items', ['id' => $itemId]);
+    }
+
+    public function test_orders_with_any_payment_status_cannot_be_deleted(): void
+    {
+        $user = User::factory()->create();
+
+        foreach (['pending', 'successful', 'failed'] as $status) {
+            $order = $this->createOrderWithItems($user);
+
+            $order->payments()->create(['method' => 'credit_card', 'status' => $status]);
+
+            $this->deleteJson("/api/orders/{$order->id}", [], [
+                'Authorization' => 'Bearer '.$this->authToken($user),
+            ])->assertStatus(409)
+                ->assertJsonPath('message', 'Orders with payments cannot be deleted.');
+
+            $this->assertDatabaseHas('orders', ['id' => $order->id]);
+            $this->assertDatabaseHas('payments', ['order_id' => $order->id, 'status' => $status]);
+        }
+    }
+
+    public function test_delete_returns_404_for_missing_or_foreign_orders(): void
+    {
+        $user = User::factory()->create();
+        $owner = User::factory()->create();
+        $foreignOrder = $this->createOrderWithItems($owner);
+
+        $this->deleteJson('/api/orders/999999', [], [
+            'Authorization' => 'Bearer '.$this->authToken($user),
+        ])->assertStatus(404);
+
+        $this->deleteJson("/api/orders/{$foreignOrder->id}", [], [
+            'Authorization' => 'Bearer '.$this->authToken($user),
+        ])->assertStatus(404);
+
+        $this->assertDatabaseHas('orders', ['id' => $foreignOrder->id]);
+    }
+
+    public function test_delete_requires_authentication(): void
+    {
+        $this->deleteJson('/api/orders/1')->assertStatus(401);
+    }
+
+    public function test_deletion_is_independent_of_order_status_when_paymentless(): void
+    {
+        $user = User::factory()->create();
+
+        foreach (['pending', 'confirmed', 'cancelled'] as $status) {
+            $order = $this->createOrderWithItems($user, $status);
+
+            $this->deleteJson("/api/orders/{$order->id}", [], [
+                'Authorization' => 'Bearer '.$this->authToken($user),
+            ])->assertStatus(204);
+        }
+
+        $this->assertDatabaseCount('orders', 0);
+    }
 }

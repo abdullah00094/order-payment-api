@@ -8,6 +8,7 @@ use App\Models\Order;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Response;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
@@ -134,5 +135,37 @@ class OrderController extends Controller
             'message' => 'Order created successfully.',
             'order' => $order->load('items'),
         ], 201);
+    }
+
+    /**
+     * Delete an order of the authenticated user when it has no payments.
+     */
+    public function destroy(int $id): JsonResponse|Response
+    {
+        $order = auth('api')->user()->orders()->find($id);
+
+        if ($order === null) {
+            return response()->json(['message' => 'Order not found.'], 404);
+        }
+
+        $deleted = DB::transaction(function () use ($order): bool {
+            $order = $order->newQuery()->whereKey($order->getKey())->lockForUpdate()->first();
+
+            if ($order->payments()->exists()) {
+                return false;
+            }
+
+            $order->delete();
+
+            return true;
+        });
+
+        if (! $deleted) {
+            return response()->json([
+                'message' => 'Orders with payments cannot be deleted.',
+            ], 409);
+        }
+
+        return response()->noContent();
     }
 }
