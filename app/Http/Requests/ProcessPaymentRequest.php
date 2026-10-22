@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Payments\PaymentGatewayResolver;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -22,9 +23,11 @@ class ProcessPaymentRequest extends FormRequest
      */
     public function rules(): array
     {
+        $availableMethods = app(PaymentGatewayResolver::class)->availableMethods();
+
         return [
-            'method' => ['required', 'string', Rule::in(['credit_card', 'paypal'])],
-            'outcome' => ['required', 'string', Rule::in(['success', 'failure'])],
+            'method' => ['required', 'string', Rule::in($availableMethods)],
+            'outcome' => ['required', 'string', Rule::in(array_keys(config('payment.outcomes', [])))],
         ];
     }
 }

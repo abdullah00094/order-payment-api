@@ -5,8 +5,10 @@ namespace Tests\Feature;
 use App\Models\Order;
 use App\Models\Payment;
 use App\Models\User;
+use App\Payments\PaymentGatewayResolver;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Testing\TestResponse;
+use InvalidArgumentException;
 use Tests\TestCase;
 
 class PaymentTest extends TestCase
@@ -299,5 +301,96 @@ class PaymentTest extends TestCase
             ->assertStatus(200)
             ->assertJsonCount(0, 'data')
             ->assertJsonPath('total', 0);
+    }
+
+    public function test_payment_method_validation_reads_centralized_gateway_configuration(): void
+    {
+        $user = User::factory()->create();
+        $order = $this->createConfirmedOrder($user);
+        $headers = ['Authorization' => 'Bearer '.auth('api')->login($user)];
+
+        $configuredMethods = array_keys(config('payment.gateways', []));
+
+        $this->assertContains('credit_card', $configuredMethods);
+        $this->assertContains('paypal', $configuredMethods);
+
+        foreach ($configuredMethods as $method) {
+            $this->postJson("/api/orders/{$order->id}/payments", [
+                'method' => $method,
+                'outcome' => 'failure',
+            ], $headers)->assertStatus(201);
+        }
+
+        $unconfigured = $this->postJson("/api/orders/{$order->id}/payments", [
+            'method' => 'not_in_config',
+            'outcome' => 'success',
+        ], $headers);
+
+        $unconfigured->assertStatus(422)->assertJsonValidationErrors(['method']);
+
+        $this->assertSame(count($configuredMethods), Payment::count());
+    }
+
+    public function test_duplicate_payment_protection_remains_functional(): void
+    {
+        $user = User::factory()->create();
+        $order = $this->createConfirmedOrder($user);
+
+        $this->pay($order, ['method' => 'credit_card', 'outcome' => 'success'])
+            ->assertStatus(201)
+            ->assertJsonPath('payment.status', 'successful');
+
+        $this->pay($order, ['method' => 'paypal', 'outcome' => 'success'])
+            ->assertStatus(409)
+            ->assertJsonPath('message', 'This order has already been paid.');
+
+        $this->assertSame(1, Payment::where('status', 'successful')->count());
+    }
+
+    public function test_disabling_a_gateway_excludes_it_from_validation_and_resolution(): void
+    {
+        $user = User::factory()->create();
+        $order = $this->createConfirmedOrder($user);
+        $headers = ['Authorization' => 'Bearer '.auth('api')->login($user)];
+
+        config(['payment.enabled.paypal' => false]);
+
+        // Disabled gateway is rejected by validation with 422.
+        $this->postJson("/api/orders/{$order->id}/payments", [
+            'method' => 'paypal',
+            'outcome' => 'success',
+        ], $headers)->assertStatus(422)
+            ->assertJsonValidationErrors(['method']);
+
+        // Resolver directly rejects the disabled gateway.
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Payment method [paypal] is currently disabled.');
+
+        app(PaymentGatewayResolver::class)->resolve('paypal');
+    }
+
+    public function test_re_enabling_a_gateway_restores_availability(): void
+    {
+        $user = User::factory()->create();
+        $order = $this->createConfirmedOrder($user);
+        $headers = ['Authorization' => 'Bearer '.auth('api')->login($user)];
+
+        config(['payment.enabled.paypal' => false]);
+
+        $this->postJson("/api/orders/{$order->id}/payments", [
+            'method' => 'paypal',
+            'outcome' => 'success',
+        ], $headers)->assertStatus(422);
+
+        config(['payment.enabled.paypal' => true]);
+
+        $this->postJson("/api/orders/{$order->id}/payments", [
+            'method' => 'paypal',
+            'outcome' => 'success',
+        ], $headers)->assertStatus(201)
+            ->assertJsonPath('payment.status', 'successful');
+
+        // Other gateways remain enabled by default throughout.
+        $this->assertTrue(config('payment.enabled.credit_card'));
     }
 }

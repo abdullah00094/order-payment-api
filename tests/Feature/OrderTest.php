@@ -557,4 +557,102 @@ class OrderTest extends TestCase
 
         $this->assertDatabaseCount('orders', 0);
     }
+
+    public function test_order_routes_return_404_for_malformed_non_numeric_ids(): void
+    {
+        $user = User::factory()->create();
+        $headers = ['Authorization' => 'Bearer '.$this->authToken($user)];
+
+        $this->getJson('/api/orders/abc', $headers)->assertStatus(404);
+        $this->patchJson('/api/orders/abc', ['customer_name' => 'X'], $headers)->assertStatus(404);
+        $this->deleteJson('/api/orders/abc', [], $headers)->assertStatus(404);
+        $this->postJson('/api/orders/abc/payments', [
+            'method' => 'credit_card',
+            'outcome' => 'success',
+        ], $headers)->assertStatus(404);
+        $this->getJson('/api/orders/abc/payments', $headers)->assertStatus(404);
+    }
+
+    public function test_numeric_overflow_inputs_return_422_without_database_errors(): void
+    {
+        $user = User::factory()->create();
+        $order = $this->createOrder($user);
+        $headers = ['Authorization' => 'Bearer '.$this->authToken($user)];
+
+        $oversizedPrice = $this->postJson('/api/orders', $this->validPayload([
+            'items' => [['product_name' => 'X', 'quantity' => 1, 'price' => '99999999999.99']],
+        ]), $headers);
+        $oversizedPrice->assertStatus(422)->assertJsonValidationErrors(['items.0.price']);
+
+        $oversizedQuantity = $this->patchJson("/api/orders/{$order->id}", [
+            'items' => [['product_name' => 'X', 'quantity' => 4294967296, 'price' => '1.00']],
+        ], $headers);
+        $oversizedQuantity->assertStatus(422)->assertJsonValidationErrors(['items.0.quantity']);
+
+        $this->assertDatabaseCount('orders', 1);
+        $order->refresh();
+        $this->assertSame('45.48', $order->total, 'Rejected input must not modify the order');
+    }
+
+    public function test_order_update_still_enforces_status_restrictions(): void
+    {
+        $user = User::factory()->create();
+        $confirmed = $this->createOrderWithItems($user, 'confirmed');
+
+        $this->patchJson("/api/orders/{$confirmed->id}", [
+            'customer_name' => 'Should Not Apply',
+        ], [
+            'Authorization' => 'Bearer '.$this->authToken($user),
+        ])->assertStatus(409)
+            ->assertJsonPath('message', 'Only pending orders can be updated.');
+
+        $confirmed->refresh();
+
+        $this->assertNotSame('Should Not Apply', $confirmed->customer_name);
+        $this->assertSame('confirmed', $confirmed->status);
+    }
+
+    public function test_aggregate_total_overflow_returns_422_on_create_and_update(): void
+    {
+        $user = User::factory()->create();
+        $headers = ['Authorization' => 'Bearer '.$this->authToken($user)];
+
+        // Individually valid items whose aggregate exceeds decimal(12,2).
+        $items = [
+            ['product_name' => 'Gold Bar', 'quantity' => 3, 'price' => '4000000000.00'],
+            ['product_name' => 'Gold Bar', 'quantity' => 3, 'price' => '4000000000.00'],
+        ];
+
+        $create = $this->postJson('/api/orders', $this->validPayload(['items' => $items]), $headers);
+
+        $create->assertStatus(422)
+            ->assertJsonValidationErrors(['items']);
+
+        $this->assertSame('9999999999.99', config('payment.max_total'));
+        $this->assertDatabaseCount('orders', 0);
+        $this->assertDatabaseCount('order_items', 0);
+
+        // Update with item replacement: rejected, existing order untouched.
+        $order = $this->createOrder($user);
+        $itemId = $order->items()->first()->id;
+
+        $update = $this->patchJson("/api/orders/{$order->id}", ['items' => $items], $headers);
+
+        $update->assertStatus(422)
+            ->assertJsonValidationErrors(['items']);
+
+        $order->refresh();
+
+        $this->assertSame('45.48', $order->total, 'Rejected update must not change the total');
+        $this->assertSame(2, $order->items()->count(), 'Rejected update must not touch existing items');
+        $this->assertDatabaseHas('order_items', ['id' => $itemId, 'product_name' => 'Widget']);
+
+        // Boundary: aggregate exactly at the limit remains valid.
+        $boundary = $this->postJson('/api/orders', $this->validPayload([
+            'items' => [['product_name' => 'Max Order', 'quantity' => 1, 'price' => '9999999999.99']],
+        ]), $headers);
+
+        $boundary->assertStatus(201)
+            ->assertJsonPath('order.total', '9999999999.99');
+    }
 }

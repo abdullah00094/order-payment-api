@@ -7,7 +7,7 @@ use App\Payments\PaymentGatewayInterface;
 use App\Payments\PaymentGatewayResolver;
 use App\Payments\PaypalGateway;
 use InvalidArgumentException;
-use PHPUnit\Framework\TestCase;
+use Tests\TestCase;
 
 class PaymentGatewayTest extends TestCase
 {
@@ -27,15 +27,27 @@ class PaymentGatewayTest extends TestCase
         $this->assertSame('failed', $gateway->process('failure'));
     }
 
-    public function test_resolver_returns_correct_strategy_for_each_method(): void
+    public function test_resolver_returns_correct_strategy_for_each_configured_method(): void
     {
         $resolver = new PaymentGatewayResolver;
 
+        foreach (array_keys(config('payment.gateways', [])) as $method) {
+            $this->assertInstanceOf(PaymentGatewayInterface::class, $resolver->resolve($method));
+        }
+
         $this->assertInstanceOf(CreditCardGateway::class, $resolver->resolve('credit_card'));
         $this->assertInstanceOf(PaypalGateway::class, $resolver->resolve('paypal'));
-
-        $this->assertInstanceOf(PaymentGatewayInterface::class, $resolver->resolve('credit_card'));
         $this->assertNotSame($resolver->resolve('credit_card'), $resolver->resolve('credit_card'), 'Resolver should return fresh gateway instances');
+    }
+
+    public function test_resolver_mapping_matches_centralized_configuration(): void
+    {
+        $configured = config('payment.gateways', []);
+
+        $this->assertArrayHasKey('credit_card', $configured);
+        $this->assertArrayHasKey('paypal', $configured);
+        $this->assertSame(CreditCardGateway::class, $configured['credit_card']);
+        $this->assertSame(PaypalGateway::class, $configured['paypal']);
     }
 
     public function test_resolver_rejects_unsupported_payment_methods(): void

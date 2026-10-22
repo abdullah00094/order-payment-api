@@ -2,11 +2,14 @@
 
 namespace App\Http\Requests;
 
+use App\Http\Requests\Concerns\ValidatesOrderItems;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
 class UpdateOrderRequest extends FormRequest
 {
+    use ValidatesOrderItems;
+
     /**
      * Determine if the user is authorized to make this request.
      */
@@ -26,10 +29,8 @@ class UpdateOrderRequest extends FormRequest
             'customer_name' => ['sometimes', 'required', 'string', 'max:255'],
             'customer_email' => ['sometimes', 'required', 'email', 'max:255'],
             'status' => ['sometimes', 'required', 'string', Rule::in(['pending', 'confirmed', 'cancelled'])],
-            'items' => ['sometimes', 'required', 'array', 'min:1'],
-            'items.*.product_name' => ['required', 'string', 'max:255'],
-            'items.*.quantity' => ['required', 'integer', 'min:1'],
-            'items.*.price' => ['required', 'numeric', 'min:0', 'regex:/^\d+(\.\d{1,2})?$/'],
+            'items' => ['sometimes', 'required', 'array', 'min:1', ...$this->itemsArrayRules()],
+            ...$this->orderItemRules(),
         ];
     }
 
@@ -40,8 +41,6 @@ class UpdateOrderRequest extends FormRequest
      */
     public function messages(): array
     {
-        return [
-            'items.*.price.regex' => 'The :attribute must have at most 2 decimal places.',
-        ];
+        return $this->orderItemMessages();
     }
 }
