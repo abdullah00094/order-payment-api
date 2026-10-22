@@ -50,6 +50,10 @@ trait ValidatesOrderItems
      * Reject the request when the aggregate order total exceeds the
      * maximum storable value of the orders.total decimal(12,2) column.
      *
+     * BCMath is only fed well-formed numeric strings: malformed input is
+     * rejected here (contributing to the request's existing 422) instead
+     * of throwing an uncaught ValueError.
+     *
      * @param  array<int, array<string, mixed>>|mixed  $value
      */
     protected function validateAggregateTotal(string $attribute, mixed $value, Closure $fail): void
@@ -66,7 +70,16 @@ trait ValidatesOrderItems
                 return;
             }
 
-            $total = bcadd($total, bcmul((string) $item['quantity'], (string) $item['price'], 2), 2);
+            $quantity = (string) $item['quantity'];
+            $price = (string) $item['price'];
+
+            if (! preg_match('/^\d+$/', $quantity) || ! preg_match('/^\d+(\.\d{1,2})?$/', $price)) {
+                $fail('The order contains invalid numeric values.');
+
+                return;
+            }
+
+            $total = bcadd($total, bcmul($quantity, $price, 2), 2);
         }
 
         if (bccomp($total, $maxTotal, 2) === 1) {

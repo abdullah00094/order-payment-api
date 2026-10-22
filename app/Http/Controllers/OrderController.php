@@ -27,7 +27,8 @@ class OrderController extends Controller
             ->with('items')
             ->when($request->query('status'), fn (Builder $query, string $status) => $query->where('status', $status))
             ->latest()
-            ->paginate(15);
+            ->paginate(15)
+            ->appends($request->query());
 
         return response()->json($orders);
     }
@@ -53,14 +54,24 @@ class OrderController extends Controller
      */
     public function update(UpdateOrderRequest $request, int $id): JsonResponse
     {
-        [$order, $error] = $this->findPendingOrderForUpdate($id);
+        $updated = DB::transaction(function () use ($request, $id): JsonResponse|Order {
+            // Ownership-scoped lookup, row-level lock, and status check all
+            // inside the same transaction as the mutations — no lock release
+            // window before the writes complete.
+            $order = auth('api')->user()->orders()
+                ->whereKey($id)
+                ->lockForUpdate()
+                ->first();
 
-        if ($error !== null) {
-            return $error;
-        }
+            if ($order === null) {
+                return response()->json(['message' => 'Order not found.'], 404);
+            }
 
-        $order = DB::transaction(function () use ($request, $id): Order {
-            $order = $this->lockOrder($id);
+            if ($order->status !== 'pending') {
+                return response()->json([
+                    'message' => 'Only pending orders can be updated.',
+                ], 409);
+            }
 
             $validated = $request->validated();
 
@@ -78,9 +89,13 @@ class OrderController extends Controller
             return $order;
         });
 
+        if ($updated instanceof JsonResponse) {
+            return $updated;
+        }
+
         return response()->json([
             'message' => 'Order updated successfully.',
-            'order' => $order->load('items'),
+            'order' => $updated->load('items'),
         ]);
     }
 
@@ -145,30 +160,6 @@ class OrderController extends Controller
         }
 
         return response()->noContent();
-    }
-
-    /**
-     * Find a pending order of the authenticated user inside a locked transaction.
-     *
-     * @return array{0: Order|null, 1: JsonResponse|null}
-     */
-    private function findPendingOrderForUpdate(int $id): array
-    {
-        return DB::transaction(function () use ($id): array {
-            $order = $this->lockOrder($id);
-
-            if ($order === null || $order->user_id !== auth('api')->id()) {
-                return [null, response()->json(['message' => 'Order not found.'], 404)];
-            }
-
-            if ($order->status !== 'pending') {
-                return [null, response()->json([
-                    'message' => 'Only pending orders can be updated.',
-                ], 409)];
-            }
-
-            return [$order, null];
-        });
     }
 
     /**

@@ -655,4 +655,66 @@ class OrderTest extends TestCase
         $boundary->assertStatus(201)
             ->assertJsonPath('order.total', '9999999999.99');
     }
+
+    public function test_malformed_numeric_input_returns_422_without_server_error(): void
+    {
+        $user = User::factory()->create();
+        $order = $this->createOrder($user);
+        $headers = ['Authorization' => 'Bearer '.$this->authToken($user)];
+
+        $badQuantityCreate = $this->postJson('/api/orders', $this->validPayload([
+            'items' => [['product_name' => 'X', 'quantity' => 'abc', 'price' => '2.00']],
+        ]), $headers);
+        $badQuantityCreate->assertStatus(422)
+            ->assertJsonValidationErrors(['items.0.quantity']);
+
+        $badPriceCreate = $this->postJson('/api/orders', $this->validPayload([
+            'items' => [['product_name' => 'X', 'quantity' => 1, 'price' => '1.5.5']],
+        ]), $headers);
+        $badPriceCreate->assertStatus(422)
+            ->assertJsonValidationErrors(['items.0.price']);
+
+        $badQuantityUpdate = $this->patchJson("/api/orders/{$order->id}", [
+            'items' => [['product_name' => 'X', 'quantity' => '2x', 'price' => '2.00']],
+        ], $headers);
+        $badQuantityUpdate->assertStatus(422)
+            ->assertJsonValidationErrors(['items.0.quantity']);
+
+        $order->refresh();
+
+        $this->assertSame('45.48', $order->total);
+        $this->assertSame(2, $order->items()->count());
+        $this->assertDatabaseCount('orders', 1);
+    }
+
+    public function test_filtered_order_pagination_preserves_status_in_links(): void
+    {
+        $user = User::factory()->create();
+        $headers = ['Authorization' => 'Bearer '.$this->authToken($user)];
+
+        for ($i = 1; $i <= 18; $i++) {
+            Order::factory()->create([
+                'user_id' => $user->id,
+                'status' => 'pending',
+                'created_at' => now()->subMinutes(20 - $i),
+            ]);
+        }
+
+        $response = $this->getJson('/api/orders?status=pending', $headers);
+
+        $response->assertStatus(200)
+            ->assertJsonCount(15, 'data')
+            ->assertJsonPath('total', 18);
+
+        $nextPageUrl = $response->json('next_page_url');
+
+        $this->assertNotNull($nextPageUrl);
+        $this->assertStringContainsString('status=pending', $nextPageUrl, 'Pagination links must preserve the status filter');
+
+        $page2 = $this->getJson($nextPageUrl, $headers);
+
+        $page2->assertStatus(200)
+            ->assertJsonCount(3, 'data')
+            ->assertJsonPath('current_page', 2);
+    }
 }
